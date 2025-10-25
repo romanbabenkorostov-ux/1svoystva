@@ -14,13 +14,46 @@ def is_streamlit():
         return False
 
 # === Пути ===
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-model_path = os.path.join(project_root, 'models', 'soil_predictor.pkl')
+# Для локальной разработки и Streamlit Cloud
+if os.path.exists('models/soil_predictor.pkl'):
+    # Если app.py в корне (Streamlit Cloud)
+    model_path = 'models/soil_predictor.pkl'
+elif os.path.exists('../models/soil_predictor.pkl'):
+    # Если app.py в папке src
+    model_path = '../models/soil_predictor.pkl'
+else:
+    # Поиск от текущей директории
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    model_path = os.path.join(project_root, 'models', 'soil_predictor.pkl')
+
+print(f"[DEBUG] Поиск модели по пути: {model_path}")
+print(f"[DEBUG] Текущая директория: {os.getcwd()}")
+print(f"[DEBUG] Файлы в текущей директории: {os.listdir('.')}")
 
 if not os.path.exists(model_path):
-    raise FileNotFoundError("Модель не найдена! Запустите: python src/10_predict_soil.py")
+    # Попытка найти модель в любом месте
+    possible_paths = [
+        'soil_predictor.pkl',
+        'models/soil_predictor.pkl',
+        '../models/soil_predictor.pkl',
+        '../../models/soil_predictor.pkl'
+    ]
+    
+    for path in possible_paths:
+        if os.path.exists(path):
+            model_path = path
+            print(f"[DEBUG] Модель найдена: {model_path}")
+            break
+    else:
+        raise FileNotFoundError(
+            f"Модель не найдена!\n"
+            f"Текущая директория: {os.getcwd()}\n"
+            f"Искали в: {possible_paths}\n"
+            f"Доступные файлы: {os.listdir('.')}"
+        )
 
 model = joblib.load(model_path)
+print(f"[DEBUG] Модель успешно загружена из {model_path}")
 
 # === Параметры ===
 PARAMS = ['Сорг.%', 'Пористость', 'Мин. N']
@@ -180,10 +213,12 @@ def web_mode():
 
     # Инициализация состояния
     if 'current_variants' not in st.session_state:
-        st.session_state.current_variants = all_variants.copy()
-        st.session_state.targets = {}
-        st.session_state.selected_param = None
-        st.session_state.step = 0
+        with st.spinner('🔄 Загрузка модели и расчёт начальных вариантов...'):
+            st.session_state.current_variants = all_variants.copy()
+            st.session_state.targets = {}
+            st.session_state.selected_param = None
+            st.session_state.step = 0
+            print(f"[DEBUG WEB] Инициализация: {len(all_variants)} вариантов загружено")
 
     current_variants = st.session_state.current_variants
     targets = st.session_state.targets
@@ -246,7 +281,9 @@ def web_mode():
         st.markdown(f"### Шаг {st.session_state.step + 1} из {len(PARAMS)}: Выбор параметра")
         st.info(f"📊 Доступно вариантов: **{len(current_variants)}**")
         
-        ranges = get_param_ranges(current_variants)
+        # Показываем информацию о пересчёте
+        with st.spinner('🔄 Расчёт доступных диапазонов...'):
+            ranges = get_param_ranges(current_variants)
         
         # Показываем кнопки для каждого параметра
         cols = st.columns(len(remaining_params))
@@ -276,15 +313,24 @@ def web_mode():
     # Защита от min = max
     if abs(max_v - min_v) < 0.01:
         st.warning(f"⚠️ Доступно только одно значение: **{min_v:.2f}**")
-        if st.button("✅ Применить это значение", type="primary"):
-            targets[param] = min_v
-            st.session_state.current_variants = filter_variants(current_variants, param, min_v)
+        
+        col1, col2 = st.columns(2)
+        
+        if col1.button("✅ Применить это значение", type="primary", width='stretch'):
+            print(f"[DEBUG WEB] Применяем единственное значение {param}={min_v}")
+            
+            with st.spinner(f'🔄 Пересчёт вариантов для {param} = {min_v}...'):
+                targets[param] = min_v
+                new_variants = filter_variants(current_variants, param, min_v)
+            
+            st.session_state.current_variants = new_variants
             st.session_state.targets = targets
             st.session_state.selected_param = None
             st.session_state.step += 1
+            st.success(f"✅ Осталось вариантов: {len(new_variants)}")
             st.rerun()
         
-        if st.button("⏭️ Пропустить параметр"):
+        if col2.button("⏭️ Пропустить параметр", width='stretch'):
             st.session_state.selected_param = None
             st.session_state.step += 1
             st.rerun()
@@ -304,8 +350,11 @@ def web_mode():
     
     if col1.button("✅ Применить", type="primary", width='stretch'):
         print(f"[DEBUG WEB] Применяем {param}={target}")
-        targets[param] = target
-        new_variants = filter_variants(current_variants, param, target)
+        
+        # Показываем окно обработки
+        with st.spinner(f'🔄 Пересчёт вариантов для {param} = {target}...'):
+            targets[param] = target
+            new_variants = filter_variants(current_variants, param, target)
         
         if not new_variants:
             st.error("⚠️ С таким значением нет вариантов! Попробуйте другое.")
@@ -314,6 +363,7 @@ def web_mode():
             st.session_state.targets = targets
             st.session_state.selected_param = None
             st.session_state.step += 1
+            st.success(f"✅ Осталось вариантов: {len(new_variants)}")
             st.rerun()
 
     if col2.button("🔙 Другой параметр", width='stretch'):
